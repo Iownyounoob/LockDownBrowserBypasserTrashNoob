@@ -1,4 +1,4 @@
-# October 2024 LockDownBrowserBypasser
+#lockdown-browser-bypass-2024
 
 Working in October 2024!
 
