@@ -1,0 +1,29 @@
+Set-ExecutionPolicy RemoteSigned -Scope Process; .\remover.ps1
+
+
+Remove-ItemProperty -Path "HKLM:\HARDWARE\DESCRIPTION\System" -Name "SystemBiosVersion"
+Get-ItemProperty -Path "HKLM:\HARDWARE\DESCRIPTION\System" -Name "SystemBiosVersion"
+
+// Command to check if they're still there.
+$registryPath = "HKLM:\HARDWARE\DESCRIPTION\System"
+
+# Retrieve and display the specified properties
+Get-ItemProperty -Path $registryPath | Select-Object `
+    SystemBiosVersion, `
+    SystemBiosDate, `
+    VideoBiosVersion, `
+    ProcessorNameString, `
+    MachineType, `
+    SystemModel, `
+    BaseBoardProduct, `
+    BaseBoardManufacturer | Format-List *
+
+Command to check deletions if want
+powershell -ExecutionPolicy Bypass -File .\CheckDeletions.ps1
+
+Starting sandbox
+Start-Process -FilePath "C:\Windows\System32\WindowsSandbox.exe" -ArgumentList "C:\Users\abcd2\OneDrive\Documents\temp\LockdownBrowserProject\Host.wsb"
+
+Make sure in visual studio developer console, then cd into folder then run following command to build
+cd C:\Users\abcd2\OneDrive\Documents\temp\LockdownBrowserProject
+powershell -ExecutionPolicy Bypass -File .\BuildDetours.ps1
