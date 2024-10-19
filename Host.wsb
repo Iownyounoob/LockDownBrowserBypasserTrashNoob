@@ -1,0 +1,9 @@
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\abcd2\OneDrive\Documents\temp\LockdownBrowserProject</HostFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <ProtectedClient>Enable</ProtectedClient>
+</Configuration>
