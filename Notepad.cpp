@@ -4,9 +4,12 @@
 #include <winternl.h>
 #include <winsvc.h>
 #include <stdio.h>
+#include <string>
+#include <sstream>
 
 #define SystemRemoteProtocolInformation 0x23  // System information class for remote protocol detection
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000)  // Status success code for NTSTATUS
+#define STATUS_OBJECT_NAME_NOT_FOUND ((NTSTATUS)0xC0000034L)
 
 // Typedef for NtQuerySystemInformation
 typedef NTSTATUS(WINAPI* pNtQuerySystemInformation)(
@@ -18,7 +21,7 @@ typedef NTSTATUS(WINAPI* pNtQuerySystemInformation)(
 // Path to the log file
 const char* logFilePath = "C:\\log.txt";
 
-// Log message to a file without a unique tag
+// Log message to a file
 void LogToFile(const char* message)
 {
     FILE* logFile;
@@ -44,10 +47,75 @@ static LONG(WINAPI* Original_RegQueryValueEx)(
     HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) = RegQueryValueExA;
 static pNtQuerySystemInformation Original_NtQuerySystemInformation = nullptr;  // To hold the original NtQuerySystemInformation
 
-// Original function pointers for services
-static BOOL(WINAPI* Original_QueryServiceStatus)(SC_HANDLE hService, LPSERVICE_STATUS lpServiceStatus) = QueryServiceStatus;
-static SC_HANDLE(WINAPI* Original_OpenService)(SC_HANDLE hSCManager, LPCSTR lpServiceName, DWORD dwDesiredAccess) = OpenServiceA;
-static BOOL(WINAPI* Original_EnumServicesStatus)(SC_HANDLE hSCManager, DWORD dwServiceType, DWORD dwServiceState, LPENUM_SERVICE_STATUSA lpServices, DWORD cbBufSize, LPDWORD pcbBytesNeeded, LPDWORD lpServicesReturned, LPDWORD lpResumeHandle) = EnumServicesStatusA;
+// Typedefs and original function pointers for service-related API functions
+typedef BOOL(WINAPI* pQueryServiceStatus)(
+    SC_HANDLE hService, 
+    LPSERVICE_STATUS lpServiceStatus);
+typedef SC_HANDLE(WINAPI* pOpenServiceA)(
+    SC_HANDLE hSCManager, 
+    LPCSTR lpServiceName, 
+    DWORD dwDesiredAccess);
+typedef BOOL(WINAPI* pEnumServicesStatusA)(
+    SC_HANDLE hSCManager, 
+    DWORD dwServiceType, 
+    DWORD dwServiceState, 
+    LPENUM_SERVICE_STATUSA lpServices, 
+    DWORD cbBufSize, 
+    LPDWORD pcbBytesNeeded, 
+    LPDWORD lpServicesReturned, 
+    LPDWORD lpResumeHandle);
+
+static pQueryServiceStatus Original_QueryServiceStatus = nullptr;
+static pOpenServiceA Original_OpenService = nullptr;
+static pEnumServicesStatusA Original_EnumServicesStatus = nullptr;
+
+// Typedef and pointer for RegOpenKeyExW
+typedef LSTATUS(WINAPI* pRegOpenKeyExW)(
+    HKEY hKey,
+    LPCWSTR lpSubKey,
+    DWORD ulOptions,
+    REGSAM samDesired,
+    PHKEY phkResult);
+static pRegOpenKeyExW Original_RegOpenKeyExW = nullptr;
+
+// Hooked RegOpenKeyExW function
+LSTATUS WINAPI Hooked_RegOpenKeyExW(
+    HKEY hKey,
+    LPCWSTR lpSubKey,
+    DWORD ulOptions,
+    REGSAM samDesired,
+    PHKEY phkResult)
+{
+    LogToFile("RegOpenKeyExW called");
+
+    // Proper logging for wide strings (converted to multibyte for logging)
+    char logMessage[1024];  // Increased size for large registry paths
+    if (lpSubKey) {
+        size_t convertedChars = wcstombs(logMessage, lpSubKey, sizeof(logMessage) - 1);
+        if (convertedChars == (size_t)-1) {
+            LogToFile("Failed to convert wide string to multibyte.");
+        } else {
+            logMessage[convertedChars] = '\0';  // Ensure null termination
+            LogToFile(logMessage);
+        }
+    }
+
+    // Call the original function so the registry operation proceeds
+    LSTATUS result = Original_RegOpenKeyExW(hKey, lpSubKey, ulOptions, samDesired, phkResult);
+
+    // If the original function failed, spoof success
+    if (result != ERROR_SUCCESS) {
+        LogToFile("RegOpenKeyExW failed, but spoofing STATUS_SUCCESS");
+        result = ERROR_SUCCESS;  // Spoof success
+    }
+
+    // Optionally clear the registry handle (phkResult) if needed
+    if (phkResult != nullptr) {
+        *phkResult = NULL;  // Simulate no valid handle being returned
+    }
+
+    return result;
+}
 
 // Services to spoof
 const char* servicesToSpoof[] = {
@@ -166,6 +234,30 @@ LONG WINAPI Hooked_RegQueryValueEx(
     sprintf_s(logMessage, "RegQueryValueEx lpValueName: %s", lpValueName);
     LogToFile(logMessage);
 
+    // Check for base keys to return "Name Not Found"
+    if (lpValueName) {
+        // Return "Name Not Found" for HKLM\System\CurrentControlSet\Services\Tcpip
+        if (strstr(lpValueName, "System\\CurrentControlSet\\Services\\Tcpip")) {
+            LogToFile("RegQueryValueEx: Returning ERROR_FILE_NOT_FOUND for Tcpip services");
+            return ERROR_FILE_NOT_FOUND;  // Simulate "Name Not Found"
+        }
+        // Return "Name Not Found" for HKLM\SOFTWARE\WOW6432Node\Microsoft\Cryptography
+        if (strstr(lpValueName, "SOFTWARE\\WOW6432Node\\Microsoft\\Cryptography")) {
+            LogToFile("RegQueryValueEx: Returning ERROR_FILE_NOT_FOUND for Cryptography");
+            return ERROR_FILE_NOT_FOUND;  // Simulate "Name Not Found"
+        }
+        // Return "Name Not Found" for HKLM\SOFTWARE\Microsoft\Windows NT\\CurrentVersion
+        if (strstr(lpValueName, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")) {
+            LogToFile("RegQueryValueEx: Returning ERROR_FILE_NOT_FOUND for Windows NT CurrentVersion");
+            return ERROR_FILE_NOT_FOUND;  // Simulate "Name Not Found"
+        }
+        // Return "Name Not Found" for HKLM\System\CurrentControlSet\Enum
+        if (strstr(lpValueName, "System\\CurrentControlSet\\Enum")) {
+            LogToFile("RegQueryValueEx: Returning ERROR_FILE_NOT_FOUND for Enum");
+            return ERROR_FILE_NOT_FOUND;  // Simulate "Name Not Found"
+        }
+    }
+
     // Spoof for terminal, RDP, and virtual machine-related values
     if (lpValueName && (strstr(lpValueName, "Terminal") ||
         strstr(lpValueName, "RDP") ||
@@ -204,7 +296,8 @@ LONG WINAPI Hooked_RegQueryValueEx(
         }
     }
 
-    return Original_RegQueryValueEx(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);  // Call original for other registry keys
+    // Call the original function for other cases
+    return Original_RegQueryValueEx(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
 }
 
 // Hooked NtQuerySystemInformation
@@ -271,6 +364,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
         HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
         if (hNtdll)
         {
+            // Hook NtQuerySystemInformation
             Original_NtQuerySystemInformation = (pNtQuerySystemInformation)GetProcAddress(hNtdll, "NtQuerySystemInformation");
             if (Original_NtQuerySystemInformation)
             {
@@ -278,13 +372,37 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
             }
         }
 
-        // Hook Service-Related Functions
-        DetourAttach(&(PVOID&)Original_QueryServiceStatus, Hooked_QueryServiceStatus);
-        DetourAttach(&(PVOID&)Original_OpenService, Hooked_OpenService);
-        DetourAttach(&(PVOID&)Original_EnumServicesStatus, Hooked_EnumServicesStatus);
+        // Hook service-related functions
+        HMODULE hAdvapi32 = GetModuleHandleA("advapi32.dll");
+        if (hAdvapi32)
+        {
+            Original_QueryServiceStatus = (pQueryServiceStatus)GetProcAddress(hAdvapi32, "QueryServiceStatus");
+            Original_OpenService = (pOpenServiceA)GetProcAddress(hAdvapi32, "OpenServiceA");
+            Original_EnumServicesStatus = (pEnumServicesStatusA)GetProcAddress(hAdvapi32, "EnumServicesStatusA");
 
-        DetourTransactionCommit();
-        LogToFile("DLL_PROCESS_ATTACH: Hooks installed");
+            if (Original_QueryServiceStatus)
+            {
+                DetourAttach(&(PVOID&)Original_QueryServiceStatus, Hooked_QueryServiceStatus);
+            }
+            if (Original_OpenService)
+            {
+                DetourAttach(&(PVOID&)Original_OpenService, Hooked_OpenService);
+            }
+            if (Original_EnumServicesStatus)
+            {
+                DetourAttach(&(PVOID&)Original_EnumServicesStatus, Hooked_EnumServicesStatus);
+            }
+        }
+
+        // Commit the transaction
+        LONG error = DetourTransactionCommit();
+        if (error != NO_ERROR) {
+            char logMessage[100];
+            sprintf_s(logMessage, "DetourTransactionCommit failed with error code: %ld", error);
+            LogToFile(logMessage);
+        } else {
+            LogToFile("DLL_PROCESS_ATTACH: Hooks installed successfully");
+        }
     }
 
     return TRUE;
